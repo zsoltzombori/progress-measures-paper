@@ -15,10 +15,11 @@ import time
 import torch.nn.functional as F
 import einops
 import random 
-from . import helpers 
+import helpers 
 from dataclasses import dataclass
 import os
 import wandb
+import copy
 
 # %% ../transformer.ipynb 4
 # TODO does dataclass really require type annotations lol
@@ -26,14 +27,16 @@ import wandb
 
 @dataclass(frozen = True)
 class Config():
-    lr: float = 1e-3 #@param
+    # lr: float = 1e-3 #@param
+    lr: float = 5*1e-4 #@param
     weight_decay: float = 1.0 #@param
     p: int = 113 #@param
     d_model: int = 128 #@param
     fn_name: str = 'add' #@param ['add', 'subtract', 'x2xyy2','rand']
     frac_train: float = 0.3 #@param
-    num_epochs: int = 50000 #@param
-    save_models: bool = False #@param
+    # num_epochs: int = 50000 #@param
+    num_epochs: int = 30000 #@param
+    save_models: bool = True #@param
     save_every: int = 100 #@param
 
     # TODO for the first 1000 steps, save every 10 because 'interesting stuff happens at the start'
@@ -477,6 +480,8 @@ class Trainer:
         self.train_losses = []
         self.test_losses = []
         self.config = config
+        self.state_dicts = []
+        self.epochs = []
 
     def save_epoch(self, epoch, save_to_wandb = True):
         ''' precondition! train loss and test losses have been appended to '''
@@ -486,6 +491,11 @@ class Trainer:
             'test_loss': self.test_losses[-1],
             'epoch': epoch,
         }
+
+        tmp_model = copy.deepcopy(self.model)
+        self.state_dicts.append(tmp_model.state_dict())
+        self.epochs.append(epoch)
+        
         if save_to_wandb:
             wandb.log(save_dict)
             print("Saved epoch to wandb")
@@ -529,6 +539,8 @@ class Trainer:
             'train_losses': self.train_losses,
             'test_losses': self.test_losses,
             'epoch': self.config.num_epochs,
+            'state_dicts': self.state_dicts,
+            'epochs': self.epochs,
         }
         if save_optimizer_and_scheduler:
             save_dict['optimizer'] = self.optimizer.state_dict()
@@ -604,3 +616,6 @@ def train_model(config: Config):
     world.post_training_save(save_optimizer_and_scheduler=True)
     helpers.lines([world.train_losses, world.test_losses], labels=['train', 'test'], log_y=True)
     return world # to export the dictionary with the training metrics
+
+config = Config()
+train_model(config)

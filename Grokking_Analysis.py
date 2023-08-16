@@ -8,28 +8,15 @@
 # # Setup
 # A collection of helper functions and setup code, no need to read. Modular addition model training code included for reference
 
-# In[1]:
+SETUP="original"
+# SETUP="rerun"
 
+EPOCHS_TO_SHOW=25000
 
-# from IPython import get_ipython
-# ipython = get_ipython()
-# try:
-#   import google.colab
-#   IN_COLAB = True
-#   print("Running as a Colab notebook")
-#   ipython.magic("pip install einops")
-#   ipython.magic("pip install -U kaleido")
-#   ipython.magic("pip install -U plotly")
-  
-# except:
-#   IN_COLAB = False
-#   print("Running as a Jupyter notebook - intended for development only!")
-  
-#   # Code to automatically update imports as code is edited without restarting the kernel
-#   ipython.magic("load_ext autoreload")
-#   ipython.magic("autoreload 2")
-#   get_ipython().run_line_magic('config', 'Completer.use_jedi = False')
-  
+plotdir="grokking_plots/{}".format(SETUP)
+import os
+os.makedirs(plotdir, exist_ok=True)  
+
 
 
 # In[48]:
@@ -271,7 +258,7 @@ html_dir = high_level_root/'htmls'
 big_latex_string = []
 all_figure_names = []
 def write_image(fig, name, file_type='pdf', apply_template=True, caption='', interpretation=''):
-  fig.write_image("{}.pdf".format(name))
+  fig.write_image("{}/{}.pdf".format(plotdir, name))
 
   pass
     # fig.show("vscode+colab")
@@ -746,10 +733,13 @@ is_test = np.array(is_test)
 
 # In[67]:
 
-
-full_run_data = torch.load(large_file_root/'full_run_data.pth')
+if SETUP == "original":
+    full_run_data = torch.load(large_file_root/'full_run_data.pth')
+elif SETUP == "rerun":
+    full_run_data = torch.load(large_file_root/'rerun.pth')
+    
 print(full_run_data.keys())
-print(full_run_data['config'])
+# print(full_run_data['config'])
 
 
 # We load in the model weights from epoch 40,000 to analyse.
@@ -757,8 +747,8 @@ print(full_run_data['config'])
 # In[68]:
 
 
-train_losses = full_run_data['train_losses'][:40000]
-test_losses = full_run_data['test_losses'][:4000]
+# train_losses = full_run_data['train_losses'][:40000]
+# test_losses = full_run_data['test_losses'][:4000]
 
 
 # In[69]:
@@ -766,7 +756,7 @@ test_losses = full_run_data['test_losses'][:4000]
 
 model = Transformer(num_layers=num_layers, d_vocab=d_vocab, d_model=d_model, d_mlp=d_mlp, d_head=d_head, num_heads=num_heads, n_ctx=n_ctx, act_type=act_type, use_cache=False, use_ln=use_ln)
 model.to('cuda')
-model.load_state_dict(full_run_data['state_dicts'][400])
+model.load_state_dict(full_run_data['state_dicts'][EPOCHS_TO_SHOW//100])
 
 
 # ### Create helper variables
@@ -888,6 +878,7 @@ neuron_freqs_original = neuron_freqs.clone()
 
 key_freqs, neuron_freq_counts = np.unique(to_numpy(neuron_freqs), return_counts=True)
 
+
 # To represent that they are in a special sixth cluster, we set the 
 # frequency of these neurons to -1
 neuron_freqs[neuron_frac_explained < 0.85] = -1.
@@ -937,7 +928,7 @@ coses/=coses.pow(2).sum([-2, -1], keepdim=True).sqrt()
 # In[79]:
 
 
-epochs = full_run_data['epochs'][:400]
+epochs = full_run_data['epochs'][:EPOCHS_TO_SHOW//100]
 metric_cache = {}
 plot_metric = partial(lines, x=epochs, xaxis='Epoch', log_y=True)
 
@@ -948,14 +939,14 @@ plot_metric = partial(lines, x=epochs, xaxis='Epoch', log_y=True)
 def get_metrics(model, metric_cache, metric_fn, name, reset=False):
     if reset or (name not in metric_cache) or (len(metric_cache[name])==0):
         metric_cache[name]=[]
-        for c, sd in enumerate(tqdm.tqdm((full_run_data['state_dicts'][:400]))):
+        for c, sd in enumerate(tqdm.tqdm((full_run_data['state_dicts'][:EPOCHS_TO_SHOW//100]))):
             model.remove_all_hooks()
             model.load_state_dict(sd)
             out = metric_fn(model)
             if type(out)==torch.Tensor:
                 out = to_numpy(out)
             metric_cache[name].append(out)
-        model.load_state_dict(full_run_data['state_dicts'][400])
+        model.load_state_dict(full_run_data['state_dicts'][EPOCHS_TO_SHOW//100])
         try:
             metric_cache[name] = torch.tensor(np.array(metric_cache[name]))
         except:
@@ -1231,13 +1222,18 @@ fig = plot_metric([metric_cache['train_acc'], metric_cache['test_acc']], line_la
 add_axis_toggle(fig.layout, "x")
 add_axis_toggle(fig.layout, "y")
 # fig.show()
-write_image(fig, 'test_loss')
-fig = plot_metric([metric_cache['train_loss'], metric_cache['test_loss']], line_labels=['train loss', 'test loss'], return_fig=True, yaxis="Loss", title="Mainline train and test loss")
-add_axis_toggle(fig.layout, "x")
-add_axis_toggle(fig.layout, "y")
-# fig.show()
-write_image(fig, 'train_loss')
+write_image(fig, 'Fig_2_accuracy')
 
+# fig = plot_metric([metric_cache['train_loss'], metric_cache['test_loss']], line_labels=['train loss', 'test loss'], return_fig=True, yaxis="Loss", title="Mainline train and test loss")
+# add_axis_toggle(fig.layout, "x")
+# add_axis_toggle(fig.layout, "y")
+# # fig.show()
+# write_image(fig, 'Fig_2_train_loss')
+
+fig = plot_metric([metric_cache['train_loss']], line_labels=['train loss'], return_fig=True, yaxis="Loss", title="Mainline train loss")
+write_image(fig, 'Fig_2_train_loss')
+fig = plot_metric([metric_cache['test_loss']], line_labels=['test loss'], return_fig=True, yaxis="Loss", title="Mainline test loss")
+write_image(fig, 'Fig_2_test_loss')
 
 # ## Figure 3
 
@@ -1249,7 +1245,7 @@ write_image(fig, 'train_loss')
 
 fig_3a = plot_embed_bars((W_E @ fourier_basis.T).norm(dim=0),
                       'Norm of embedding of each Fourier Component', return_fig=True)
-write_image(fig_3a, "fig_3a")
+write_image(fig_3a, "Fig_3a")
 
 
 # ## Figure 3b
@@ -1271,7 +1267,7 @@ for freq in key_freqs:
 fig_3b = plot_embed_bars(W_Lf.norm(dim=1), 'Norm of neuron-logit map for each Fourier Component', return_fig = True)
 fig = fig.update_layout(dict(title_font_size=25))
 
-write_image(fig_3b, 'fig_3b')
+write_image(fig_3b, 'Fig_3b')
 
 
 # ## Figure 4a
@@ -1301,7 +1297,7 @@ fig = inputs_heatmap(attn_mat[:, :,  0],
 fig = fig.update_layout(coloraxis_colorbar_x=1.0,
                   coloraxis_colorbar_xanchor="left", xaxis_title="a", yaxis_title="b")
 # fig.show("vscode+colab")
-write_image(fig, 'att_score_pos_0')
+write_image(fig, 'Fig_4_att_score_pos_0')
 
 
 # In[97]:
@@ -1316,7 +1312,7 @@ fig = inputs_heatmap(neuron_acts[:, :4],
                      zmin=0.)
 fig = fig.update_layout(xaxis_title="a", yaxis_title="b")
 # fig.show("vscode+colab")
-write_image(fig, 'act_mlp_neuron_0')
+write_image(fig, 'Fig_4_act_mlp_neuron_0')
 
 
 # In[98]:
@@ -1326,7 +1322,7 @@ fig = imshow_fourier(fft2d(original_logits[:, :]).norm(dim=-1),
            title=f'Norms of Logits in 2D Fourier Basis', return_fig=True)
 fig = fig.update_layout(coloraxis_colorbar_x = 0.9)
 # fig.show("vscode+colab")
-write_image(fig, 'norm_fourier_logits')
+write_image(fig, 'Fig_4_norm_fourier_logits')
 
 
 # ## Figure 5a
@@ -1347,23 +1343,23 @@ fig = histogram(neuron_frac_explained,
                 return_fig=True)
 fig = fig.update_layout(showlegend=False)
 # fig.show("vscode+colab")
-write_image(fig, 'neuron_frac_explained')
+write_image(fig, 'Fig_5_neuron_frac_explained')
 
 
 # In[100]:
 
 
-fig = imshow(fourier_basis @ W_L[:, neuron_freqs==14], 
+fig = imshow(fourier_basis @ W_L[:, neuron_freqs==key_freqs[0]], 
                  aspect='auto', 
                  y=fourier_basis_names,
-                 x = torch.arange(d_mlp)[neuron_freqs==14], 
-                 title='Weights Mapping Freq 14 Neurons to Logits',
+                 x = torch.arange(d_mlp)[neuron_freqs==key_freqs[0]], 
+                 title='Weights Mapping Freq {} Neurons to Logits'.format(key_freqs[0]),
                  xaxis='Neuron',
                  return_fig=True, height = 500, width=500)
 fig = fig.update_layout( coloraxis_colorbar_x=1.05)
 fig = fig.update_layout(title_font_size=25)
 # fig.show("vscode+colab")
-write_image(fig, 'w_logit_fourier_basis_freq14')
+write_image(fig, 'Fig_5_w_logit_fourier_basis_freq{}'.format(key_freqs[0]))
 
 
 # # Figure 6
@@ -1409,7 +1405,7 @@ to_numpy([metric_cache['excluded_loss_2D_full'], metric_cache['train_loss'],  me
 # In[102]:
 
 
-full_run_data['epochs'] = full_run_data['epochs'][:400]
+full_run_data['epochs'] = full_run_data['epochs'][:EPOCHS_TO_SHOW//100]
 
 
 # In[103]:
@@ -1451,7 +1447,7 @@ fig = lines([metric_cache['excluded_loss_2D_full'], metric_cache['train_loss'], 
       return_fig = True)
 fig = fig.update_layout(legend=legend_in_plot_dict)
 # fig.show("vscode+colab")
-write_image(fig, 'excluded_loss_2D_full')
+write_image(fig, 'Fig_7_excluded_loss_2D_full')
 figures[0] = fig
 
 
@@ -1465,7 +1461,7 @@ fig = plot_metric([metric_cache[lab] for lab in line_labels],
 fig = fig.update_layout(legend=legend_in_plot_dict)
 fig = fig.update_layout(legend_orientation='v')
 # fig.show("vscode+colab")
-write_image(fig, 'restricted_loss')
+write_image(fig, 'Fig_7_restricted_loss')
 figures[1] = fig
 
 
@@ -1475,7 +1471,7 @@ fig = plot_metric([metric_cache['test_loss']/metric_cache['trig_loss']],
             yaxis='Ratio',
             return_fig=True)
 # fig.show("vscode+colab")
-write_image(fig, 'restricted_loss_ratio')
+write_image(fig, 'Fig_7_restricted_loss_ratio')
 figures[2] = fig
 
 # fig = plot_metric(metric_cache['sum_sq_weights'].T, 
@@ -1493,7 +1489,7 @@ fig = plot_metric([einops.reduce(metric_cache['sum_sq_weights'], 'epoch param ->
             yaxis='Sum of Squared Weights',
             return_fig = True)
 # fig.show("vscode+colab")
-write_image(fig, "sum_sq_weight_total")
+write_image(fig, "Fig_7_sum_sq_weight_total")
 figures[3] = fig
 
 
@@ -1542,8 +1538,7 @@ write_image(fig, "w_attn_fourier")
 
 
 line_labels = ['test_acc', 'train_acc'] #, 'trig_acc', 'trig_acc_train']
-human_readable_line_labels = ['test loss', 'train loss',
-                              'restricted accuracy', 'restricted accuracy- train']
+human_readable_line_labels = ['test loss', 'train loss'] #,'restricted accuracy', 'restricted accuracy- train']
 fig = plot_metric([metric_cache[lab] for lab in line_labels], line_labels=human_readable_line_labels,
                   title='Pure Restricted Accuracy', return_fig=True, log_y=False)
 add_axis_toggle(fig.layout, 'x')
@@ -1606,36 +1601,36 @@ write_image(fig, 'excluded_loss_2D_key')
 # In[110]:
 
 
-train_losses_5_digit = torch.load(
-    saved_runs_dir/'5_digit_addition_infinite_train.pth')
-fig = line(train_losses_5_digit, 
-     log_y=False, 
-     title='Phase Change in 5 Digit Addition Infinite Data Training Curve', 
-     xaxis='Steps', 
-     yaxis='Loss',
-     return_fig=True)
-fig = fig.update_layout(title_font_size=20)
-fig = fig.update_layout(showlegend=False)
-add_axis_toggle(fig.layout, 'x')
-add_axis_toggle(fig.layout, 'y')
-# fig.show("vscode+colab")
-write_image(fig, "5_digit_add_infinite_linear")
+# train_losses_5_digit = torch.load(
+#     saved_runs_dir/'5_digit_addition_infinite_train.pth')
+# fig = line(train_losses_5_digit, 
+#      log_y=False, 
+#      title='Phase Change in 5 Digit Addition Infinite Data Training Curve', 
+#      xaxis='Steps', 
+#      yaxis='Loss',
+#      return_fig=True)
+# fig = fig.update_layout(title_font_size=20)
+# fig = fig.update_layout(showlegend=False)
+# add_axis_toggle(fig.layout, 'x')
+# add_axis_toggle(fig.layout, 'y')
+# # fig.show("vscode+colab")
+# write_image(fig, "5_digit_add_infinite_linear")
 
 
-per_token_losses = torch.load(
-    saved_runs_dir/'5_digit_addition_infinite_per_token.pth')
-loss_concat = np.concatenate(
-    [per_token_losses, np.array(train_losses_5_digit)[:, None]], axis=1).T
-fig = lines(loss_concat,
-            title='Per Token Phase Changes',
-            xaxis='Steps',
-            yaxis='Loss',
-            line_labels=[f'token {k} loss' for k in range(6)]+['train loss'],
-            return_fig=True)
-add_axis_toggle(fig.layout, 'x')
-add_axis_toggle(fig.layout, 'y')
-# fig.show("vscode+colab")
-write_image(fig, "5_digit_add_infinite_per_token")
+# per_token_losses = torch.load(
+#     saved_runs_dir/'5_digit_addition_infinite_per_token.pth')
+# loss_concat = np.concatenate(
+#     [per_token_losses, np.array(train_losses_5_digit)[:, None]], axis=1).T
+# fig = lines(loss_concat,
+#             title='Per Token Phase Changes',
+#             xaxis='Steps',
+#             yaxis='Loss',
+#             line_labels=[f'token {k} loss' for k in range(6)]+['train loss'],
+#             return_fig=True)
+# add_axis_toggle(fig.layout, 'x')
+# add_axis_toggle(fig.layout, 'y')
+# # fig.show("vscode+colab")
+# write_image(fig, "5_digit_add_infinite_per_token")
 
 
 # ## Figure 23
@@ -1645,20 +1640,20 @@ write_image(fig, "5_digit_add_infinite_per_token")
 # In[111]:
 
 
-finite_dic = torch.load(saved_runs_dir/'5_digit_addition_finite.pth')
-train_losses_5 = finite_dic['train_losses']
-test_losses_5 = finite_dic['test_losses']
-fig = lines([train_losses_5, test_losses_5],
-            log_y=True,
-            line_labels=['train', 'test'],
-            title='Phase Change in 5 Digit Addition- Finite (700) Data Points (Log)',
-            xaxis='Epochs',
-            yaxis='Log Loss',
-            return_fig=True)
-add_axis_toggle(fig.layout, 'x')
-add_axis_toggle(fig.layout, 'y')
-# fig.show("vscode+colab")
-write_image(fig, "5_digit_add_finite_log")
+# finite_dic = torch.load(saved_runs_dir/'5_digit_addition_finite.pth')
+# train_losses_5 = finite_dic['train_losses']
+# test_losses_5 = finite_dic['test_losses']
+# fig = lines([train_losses_5, test_losses_5],
+#             log_y=True,
+#             line_labels=['train', 'test'],
+#             title='Phase Change in 5 Digit Addition- Finite (700) Data Points (Log)',
+#             xaxis='Epochs',
+#             yaxis='Log Loss',
+#             return_fig=True)
+# add_axis_toggle(fig.layout, 'x')
+# add_axis_toggle(fig.layout, 'y')
+# # fig.show("vscode+colab")
+# write_image(fig, "5_digit_add_finite_log")
 
 
 # ## Figure 24
@@ -1668,16 +1663,16 @@ write_image(fig, "5_digit_add_finite_log")
 # In[112]:
 
 
-induction_head_run_infinite = torch.load(saved_runs_dir/'induction_head_infinite.pth')
-fig = lines([induction_head_run_infinite['train_losses']], 
-    return_fig=True,
-      title='Repeated Subsequence Prediction- Infinite Data Training (Linear)',
-      xaxis='Step',
-      yaxis='Loss')
-add_axis_toggle(fig.layout, 'x')
-add_axis_toggle(fig.layout, 'y')
-# fig.show("vscode+colab")
-write_image(fig, "induction_head_infinite_linear")
+# induction_head_run_infinite = torch.load(saved_runs_dir/'induction_head_infinite.pth')
+# fig = lines([induction_head_run_infinite['train_losses']], 
+#     return_fig=True,
+#       title='Repeated Subsequence Prediction- Infinite Data Training (Linear)',
+#       xaxis='Step',
+#       yaxis='Loss')
+# add_axis_toggle(fig.layout, 'x')
+# add_axis_toggle(fig.layout, 'y')
+# # fig.show("vscode+colab")
+# write_image(fig, "induction_head_infinite_linear")
 
 
 # ## Figure 25
@@ -1686,24 +1681,24 @@ write_image(fig, "induction_head_infinite_linear")
 # In[113]:
 
 
-induction_head_run_finite = torch.load(
-    saved_runs_dir/'induction_head_finite.pth')
-# Test loss taken every 4 epochs, plot data every 40 epochs
-fig = lines([induction_head_run_finite['train_losses'][:230000:40],
-             induction_head_run_finite['test_losses'][:57500:10]],
-            return_fig=True,
-            x=list(
-                range(0, len(induction_head_run_finite['train_losses'][:230000]), 40)),
-            log_y=False,
-            title='Repeated Subsequence Prediction- Finite (512) Data Points (Log)',
-            xaxis='Epoch',
-            yaxis='Log Loss',
-            line_labels=['train', 'test'],
-            )
-add_axis_toggle(fig.layout, 'x')
-add_axis_toggle(fig.layout, 'y')
-# fig.show("vscode+colab")
-write_image(fig, "induction_head_finite_LINEAR")
+# induction_head_run_finite = torch.load(
+#     saved_runs_dir/'induction_head_finite.pth')
+# # Test loss taken every 4 epochs, plot data every 40 epochs
+# fig = lines([induction_head_run_finite['train_losses'][:230000:40],
+#              induction_head_run_finite['test_losses'][:57500:10]],
+#             return_fig=True,
+#             x=list(
+#                 range(0, len(induction_head_run_finite['train_losses'][:230000]), 40)),
+#             log_y=False,
+#             title='Repeated Subsequence Prediction- Finite (512) Data Points (Log)',
+#             xaxis='Epoch',
+#             yaxis='Log Loss',
+#             line_labels=['train', 'test'],
+#             )
+# add_axis_toggle(fig.layout, 'x')
+# add_axis_toggle(fig.layout, 'y')
+# # fig.show("vscode+colab")
+# write_image(fig, "induction_head_finite_LINEAR")
 
 
 # In[ ]:
