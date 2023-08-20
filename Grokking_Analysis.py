@@ -10,8 +10,10 @@
 
 SETUP="original"
 # SETUP="rerun"
+SETUP="binary"
+# SETUP="onehot"
 
-EPOCHS_TO_SHOW=25000
+EPOCHS_TO_SHOW=29000
 
 plotdir="grokking_plots/{}".format(SETUP)
 import os
@@ -737,6 +739,10 @@ if SETUP == "original":
     full_run_data = torch.load(large_file_root/'full_run_data.pth')
 elif SETUP == "rerun":
     full_run_data = torch.load(large_file_root/'rerun.pth')
+elif SETUP == "binary":
+    full_run_data = torch.load(large_file_root/'binary.pth')
+elif SETUP == "onehot":
+    full_run_data = torch.load("saved_runs/grok_1692540721/final.pth")
     
 print(full_run_data.keys())
 # print(full_run_data['config'])

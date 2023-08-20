@@ -21,8 +21,8 @@ import os
 import wandb
 import copy
 
-# %% ../transformer.ipynb 4
-# TODO does dataclass really require type annotations lol
+DEVICE = t.device("cuda" if t.cuda.is_available() else "cpu")
+
 
 
 @dataclass(frozen = True)
@@ -35,7 +35,7 @@ class Config():
     fn_name: str = 'add' #@param ['add', 'subtract', 'x2xyy2','rand']
     frac_train: float = 0.3 #@param
     # num_epochs: int = 50000 #@param
-    num_epochs: int = 30000 #@param
+    num_epochs: int = 40000 #@param
     save_models: bool = True #@param
     save_every: int = 100 #@param
 
@@ -56,13 +56,15 @@ class Config():
     act_type: str = 'ReLU' #@param ['ReLU', 'GeLU']
 
 
-    device: t.device = t.device("cuda")
+    device: t.device = t.device(DEVICE)
 
     # TODO ankify the privileged basis concept- a priori vs etc. ; consider writing up an explanation of privileged basis
 
     use_ln: bool = False
 
     take_metrics_every_n_epochs: int = 1000 #@param
+
+    input_format="binary"
 
     @property
     def d_head(self):
@@ -85,22 +87,31 @@ class Config():
     def fn(self):
         return self.fns_dict[self.fn_name]
 
-    def is_train_is_test(self, train):
+    def is_train_is_test(self, train, all_data):
         '''Creates an array of Boolean indices according to whether each data point is in train or test.
         Used to index into the big batch of all possible data'''
-        # TODO probably the wrong place for this
-        is_train = []
-        is_test = []
-        for x in range(self.p):
-            for y in range(self.p):
-                if (x, y, 113) in train:
-                    is_train.append(True)
-                    is_test.append(False)
-                else:
-                    is_train.append(False)
-                    is_test.append(True)
-        is_train = np.array(is_train)
-        is_test = np.array(is_test)
+
+        batch1=len(all_data)
+        batch2=len(train)
+        is_train = np.array([(t.any(t.all((train==b).reshape(batch2, -1), dim=1))).item() for b in all_data])
+        is_test = np.invert(is_train)
+              
+
+        # # TODO probably the wrong place for this
+        # is_train = []
+        # is_test = []
+        # for x in range(self.p):
+        #     for y in range(self.p):
+        #         if t.tensor((x, y, self.p)) in train:
+
+                    
+        #             is_train.append(True)
+        #             is_test.append(False)
+        #         else:
+        #             is_train.append(False)
+        #             is_test.append(True)
+        # is_train = np.array(is_train)
+        # is_test = np.array(is_test)
         return (is_train, is_test)
 
     def is_it_time_to_save(self, epoch):
@@ -156,6 +167,7 @@ class HookPoint(nn.Module):
     
     def forward(self, x):
         return x
+    
 
 # %% ../transformer.ipynb 6
 class Embed(nn.Module):
@@ -163,12 +175,18 @@ class Embed(nn.Module):
     I defined my own transformer from scratch so I'd fully understand each component 
     - I expect this wasn't necessary or particularly important, and a bunch of this replicates existing Pyt functionality
     '''
-    def __init__(self, d_vocab, d_model):
+    def __init__(self, d_vocab, d_model, input_format="onehot"):
         super().__init__()
         self.W_E = nn.Parameter(t.randn(d_model, d_vocab)/np.sqrt(d_model))
+        self.input_format = input_format
+        self.d_vocab = d_vocab
     
     def forward(self, x):
-        return t.einsum('dbp -> bpd', self.W_E[:, x])
+        if self.input_format == "orig":
+            return t.einsum('dbp -> bpd', self.W_E[:, x])
+        else:
+            return t.einsum("dp,...ip -> ...id", self.W_E, x)
+
 
 #| export
 class Unembed(nn.Module):
@@ -289,7 +307,7 @@ class Transformer(nn.Module):
         super().__init__()
         self.cache = {}
         self.use_cache = use_cache
-        self.embed = Embed(d_vocab = config.d_vocab, d_model = config.d_model)
+        self.embed = Embed(d_vocab = config.d_vocab, d_model = config.d_model, input_format=config.input_format)
         self.pos_embed = PosEmbed(max_ctx = config.n_ctx, d_model = config.d_model)
         self.blocks = nn.ModuleList([TransformerBlock(d_model = config.d_model,
             d_mlp = config.d_mlp,
@@ -354,8 +372,6 @@ def make_fourier_basis(config: Config):
 
 
 def calculate_key_freqs(config: Config, model: Transformer, all_data):
-    # TODO this was moved from the app code; probably move it around
-    labels = t.tensor([config.fn(i, j) for i, j, _ in all_data]).to(config.device)
     cache = {}
     model.remove_all_hooks() # TODO is this line fucky??
     model.cache_all(cache)
@@ -407,7 +423,7 @@ def calculate_excluded_loss(config: Config, fourier_basis, key_freqs, is_train, 
         row.append(value.item())
     return row
 
-def calculate_trig_loss(config: Config, model, train, logits, key_freqs, fourier_basis, all_data, is_train, is_test, labels, mode='all'):
+def calculate_trig_loss(config: Config, model, train, logits, key_freqs, fourier_basis, is_train, is_test, labels, mode='all'):
     trig_logits = sum([get_components_of_trig_loss(logits, freq, fourier_basis) for freq in key_freqs])
     return helpers.test_logits(trig_logits, 
                         p = config.p,
@@ -437,21 +453,50 @@ def calculate_coefficients(logits, fourier_basis, key_freqs, p, device):
 import dataclasses
 from collections import defaultdict
 
+def int_to_vec(n, input_format, d_vocab):
+    result = t.zeros(d_vocab)
+    if input_format == "onehot":
+        result[n] = 1.0
+    elif input_format == "binary":
+        for i in range(d_vocab):
+            if n == 0:
+                break
+            if (n % 2 != 0):
+                result[i] = 1.0
+            n = n // 2
+    return result
+
 def gen_train_test(config: Config):
     '''Generate train and test split'''
     num_to_generate = config.p
     pairs = [(i, j, num_to_generate) for i in range(num_to_generate) for j in range(num_to_generate)]
+    labels = [config.fn(i, j) for i, j, _ in pairs]
     random.seed(config.seed)
-    random.shuffle(pairs)
+
+    if config.input_format != "orig":
+        pairs = [t.stack([int_to_vec(element, config.input_format, config.d_vocab) for element in item]) for item in pairs]
+
+    temp = list(zip(pairs, labels))
+    random.shuffle(temp)
+    pairs, labels = zip(*temp)
+    
     div = int(config.frac_train*len(pairs))
-    return pairs[:div], pairs[div:]
+    if config.input_format == "orig":
+        return pairs[:div], labels[:div], pairs[div:], labels[div:], pairs, labels
+    else:
+        train_data = t.stack(pairs[:div]).to(DEVICE)
+        test_data = t.stack(pairs[div:]).to(DEVICE)
+        all_data = t.stack(pairs).to(DEVICE)
+        train_labels = t.tensor(labels[:div]).to(DEVICE)
+        test_labels = t.tensor(labels[div:]).to(DEVICE)
+        all_labels = t.tensor(labels).to(DEVICE)
+        return train_data, train_labels, test_data, test_labels, all_data, all_labels
 
 # TODO what type for model?
-def full_loss(config : Config, model: Transformer, data):
+def full_loss(config : Config, model: Transformer, data, labels):
     '''Takes the cross entropy loss of the model on the data'''
     # Take the final position only
     logits = model(data)[:, -1]
-    labels = t.tensor([config.fn(i, j) for i, j, _ in data]).to(config.device)
     return helpers.cross_entropy_high_precision(logits, labels)
 
 
@@ -467,16 +512,16 @@ class Trainer:
     '''
 
     def __init__(self, config : Config, model = None) -> None:
-        wandb.init(project = "grokking", config = dataclasses.asdict(config))
+        # wandb.init(project = "grokking", config = dataclasses.asdict(config))
         self.model = model if model is not None else Transformer(config, use_cache=False)
         self.model.to(config.device)
         self.optimizer = optim.AdamW(self.model.parameters(), lr = config.lr, weight_decay=config.weight_decay, betas=(0.9, 0.98))
         self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lambda step: min(step/10, 1)) # TODO make this a config option
         self.run_name = f"grok_{int(time.time())}"
-        self.train, self.test = gen_train_test(config = config)
+        self.train_data, self.train_labels, self.test_data, self.test_labels, self.all_data, self.all_labels = gen_train_test(config = config)
         self.metrics_dictionary = defaultdict(dict) # so we can safely call 'update' on keys
-        print('training length = ', len(self.train))
-        print('testing length = ', len(self.test))
+        print('training length = ', len(self.train_data))
+        print('testing length = ', len(self.test_data))
         self.train_losses = []
         self.test_losses = []
         self.config = config
@@ -496,9 +541,9 @@ class Trainer:
         self.state_dicts.append(tmp_model.state_dict())
         self.epochs.append(epoch)
         
-        if save_to_wandb:
-            wandb.log(save_dict)
-            print("Saved epoch to wandb")
+        # if save_to_wandb:
+            # wandb.log(save_dict)
+            # print("Saved epoch to wandb")
         if self.config.save_models: 
             t.save(save_dict, helpers.root/self.run_name/f"{epoch}.pth")
             print(f"Saved model to {helpers.root/self.run_name/f'{epoch}.pth'}")
@@ -506,8 +551,8 @@ class Trainer:
 
     def do_a_training_step(self, epoch: int):
         '''returns train_loss, test_loss'''
-        train_loss = full_loss(config = self.config, model = self.model, data = self.train)
-        test_loss = full_loss(config = self.config, model = self.model, data = self.test)
+        train_loss = full_loss(config = self.config, model = self.model, data = self.train_data, labels=self.train_labels)
+        test_loss = full_loss(config = self.config, model = self.model, data = self.test_data, labels=self.test_labels)
         self.train_losses.append(train_loss.item())
         self.test_losses.append(test_loss.item())
         if epoch % 100 == 0:
@@ -524,8 +569,8 @@ class Trainer:
             os.mkdir(helpers.root/self.run_name)
             save_dict = {
                 'model': self.model.state_dict(),
-                'train_data' : self.train,
-                'test_data' : self.test}
+                'train_data' : self.train_data,
+                'test_data' : self.test_data}
             t.save(save_dict, helpers.root/self.run_name/'init.pth')
 
 
@@ -545,14 +590,14 @@ class Trainer:
         if save_optimizer_and_scheduler:
             save_dict['optimizer'] = self.optimizer.state_dict()
             save_dict['scheduler'] = self.scheduler.state_dict()
-        if log_to_wandb:
-            wandb.log(save_dict)
+        # if log_to_wandb:
+            # wandb.log(save_dict)
         t.save(save_dict, helpers.root/self.run_name/f"final.pth")
         print(f"Saved model to {helpers.root/self.run_name/f'final.pth'}")
         self.metrics_dictionary[save_dict['epoch']].update(save_dict)
 
 
-    def take_metrics(self, train, epoch):
+    def take_metrics(self, train, epoch, all_data, all_labels):
         with t.inference_mode():
             def sum_sq_weights():
                 # TODO refactor- taken from app code
@@ -563,13 +608,11 @@ class Trainer:
 
             print('taking metrics')
 
-            all_data = t.tensor([(i, j, self.config.p) for i in range(self.config.p) for j in range(self.config.p)]).to(self.config.device)
             # TODO calculate key freqs is the most expensive part of this
-            key_freqs = calculate_key_freqs(config = self.config, model = self.model, all_data = all_data) 
+            key_freqs = calculate_key_freqs(config = self.config, model = self.model, all_data = all_data)
             logits = self.model(all_data)[:, -1, :-1] # TODO i think this is equivalent to what's in the new paper?
             fourier_basis = make_fourier_basis(config = self.config)
-            is_train, is_test = self.config.is_train_is_test(train = train)
-            labels = t.tensor([self.config.fn(i, j) for i, j, _ in all_data]).to(self.config.device)
+            is_train, is_test = self.config.is_train_is_test(train = train, all_data=all_data)
 
             metrics = {
                 'epoch': epoch, 
@@ -579,10 +622,9 @@ class Trainer:
                     key_freqs = key_freqs,
                     is_test=is_test,
                     is_train=is_train,
-                    labels=labels,
+                    labels=all_labels,
                     logits = logits,
-                    fourier_basis=fourier_basis, 
-                    all_data=all_data),
+                    fourier_basis=fourier_basis),
                 'sum_of_squared_weights': sum_sq_weights(),
                 'excluded_loss': calculate_excluded_loss(
                     logits = logits,
@@ -591,11 +633,11 @@ class Trainer:
                     is_train=is_train,
                     config = self.config,
                     is_test = is_test,
-                    labels=labels),
+                    labels=all_labels),
                 'coefficients': calculate_coefficients(p = self.config.p, logits = logits, fourier_basis = fourier_basis, key_freqs = key_freqs, device = self.config.device),
             }
-            wandb.log(metrics)
-            print("Logged metrics to wandb")
+            # wandb.log(metrics)
+            # print("Logged metrics to wandb")
             self.metrics_dictionary[epoch].update(metrics)
 
 def train_model(config: Config):
@@ -609,9 +651,9 @@ def train_model(config: Config):
             break
         if config.is_it_time_to_save(epoch = epoch):
             # TODO this also used to do a check about test loss- pretty sure not necessary
-            world.save_epoch(epoch = epoch)
+            world.save_epoch(epoch = epoch, save_to_wandb=False)
         if config.is_it_time_to_take_metrics(epoch = epoch):
-            world.take_metrics(epoch = epoch, train = world.train)
+            world.take_metrics(epoch = epoch, train = world.train_data, all_data=world.all_data, all_labels=world.all_labels)
 
     world.post_training_save(save_optimizer_and_scheduler=True)
     helpers.lines([world.train_losses, world.test_losses], labels=['train', 'test'], log_y=True)
