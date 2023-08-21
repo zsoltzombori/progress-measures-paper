@@ -64,7 +64,7 @@ class Config():
 
     take_metrics_every_n_epochs: int = 1000 #@param
 
-    input_format="binary"
+    input_format="onehot" # origional, onehot, binary, unary
 
     @property
     def d_head(self):
@@ -464,6 +464,9 @@ def int_to_vec(n, input_format, d_vocab):
             if (n % 2 != 0):
                 result[i] = 1.0
             n = n // 2
+    elif input_format == "unary":
+        for i in range(n):
+            result[i] = 1.0
     return result
 
 def gen_train_test(config: Config):
@@ -493,7 +496,7 @@ def gen_train_test(config: Config):
         return train_data, train_labels, test_data, test_labels, all_data, all_labels
 
 # TODO what type for model?
-def full_loss(config : Config, model: Transformer, data, labels):
+def full_loss(model: Transformer, data, labels):
     '''Takes the cross entropy loss of the model on the data'''
     # Take the final position only
     logits = model(data)[:, -1]
@@ -551,13 +554,14 @@ class Trainer:
 
     def do_a_training_step(self, epoch: int):
         '''returns train_loss, test_loss'''
-        train_loss = full_loss(config = self.config, model = self.model, data = self.train_data, labels=self.train_labels)
-        test_loss = full_loss(config = self.config, model = self.model, data = self.test_data, labels=self.test_labels)
+        train_loss = full_loss(model = self.model, data = self.train_data, labels=self.train_labels)
+        test_loss = full_loss(model = self.model, data = self.test_data, labels=self.test_labels)
         self.train_losses.append(train_loss.item())
         self.test_losses.append(test_loss.item())
         if epoch % 100 == 0:
             # TODO is this ok? this was np.log, and it was barking at me ; i think np.log was being interpreted as a logging module
             print(f'Epoch {epoch}, train loss {t.log(train_loss).item():.4f}, test loss {t.log(test_loss).item():.4f}')
+            print(f'Epoch {epoch}, train loss {train_loss.item():.4f}, test loss {test_loss.item():.4f}')
         train_loss.backward()
         self.optimizer.step()
         self.scheduler.step()
@@ -578,6 +582,7 @@ class Trainer:
         if not self.config.save_models:
             os.makedirs(helpers.root/self.run_name, exist_ok=True)
         save_dict = {
+            'config': self.config,
             'model': self.model.state_dict(),
             'train_loss': self.train_losses[-1],
             'test_loss': self.test_losses[-1],
@@ -659,5 +664,6 @@ def train_model(config: Config):
     helpers.lines([world.train_losses, world.test_losses], labels=['train', 'test'], log_y=True)
     return world # to export the dictionary with the training metrics
 
-config = Config()
-train_model(config)
+if __name__ == '__main__':
+    config = Config()
+    train_model(config)
