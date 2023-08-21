@@ -1,32 +1,68 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Progress Measures for Grokking via Mechanistic Interpretability
-# 
-# An accompanying notebook for [Progress Measures for Grokking via Mechanistic Interpretability](https://www.progress-measures-grokking.io/) for reproducibility. This notebook contains the code used to generate most of our main figures, the progress measures and code to access the saved model weights from our mainline analysis. 
+import os
+import torch as t
+from pathlib import Path
 
-# # Setup
-# A collection of helper functions and setup code, no need to read. Modular addition model training code included for reference
+import helpers
+from transformers import *
+
+DEVICE = t.device("cuda" if t.cuda.is_available() else "cpu")
+
+high_level_root = Path(os.getcwd())
+saved_runs_dir = high_level_root/'saved_runs'
+large_file_root = high_level_root/'large_files'
+# print("high_level_root", high_level_root)
+
 
 SETUP="original"
 # SETUP="rerun"
 SETUP="binary"
 SETUP="onehot"
+# SETUP="test"
 
 EPOCHS_TO_SHOW=29000
 
 plotdir="grokking_plots/{}".format(SETUP)
-import os
 os.makedirs(plotdir, exist_ok=True)  
 
-from transformers import Config
+if SETUP == "original":
+    full_run_data = t.load(large_file_root/'full_run_data.pth')
+elif SETUP == "rerun":
+    full_run_data = t.load(large_file_root/'rerun.pth')
+elif SETUP == "binary":
+    full_run_data = t.load(large_file_root/'binary.pth')
+elif SETUP == "onehot":
+    full_run_data = t.load(large_file_root/'onehot.pth')
+elif SETUP == "test":
+    full_run_data = t.load("saved_runs/grok_1692614053/final.pth")
+
+    
+    
+print(full_run_data.keys())
+config = full_run_data['config']
+print("config", config)
+
+# load model
+model = Transformer(config, use_cache=False)
+model.to(DEVICE)
+model.load_state_dict(full_run_data['state_dicts'][EPOCHS_TO_SHOW//100])
 
 
-# In[48]:
+# generate data
+train_data, train_labels, test_data, test_labels, all_data, all_labels = gen_train_test(config = config)
+
+
+is_train, is_test = config.is_train_is_test(train = train_data, all_data=all_data)
+
+
+def test_logits_simple(logits, mode, bias_correction=False, original_logits=None):
+    return helpers.test_logits(logits, config.p, is_train, is_test, all_labels, bias_correction=bias_correction, mode=mode, original_logits=original_logits)
+
 
 
 # Import stuff
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -38,9 +74,7 @@ import random
 import time
 
 # from google.colab import drive
-from pathlib import Path
 import pickle
-import os
 
 import matplotlib.pyplot as plt
 # get_ipython().run_line_magic('matplotlib', 'inline')
@@ -66,30 +100,7 @@ import itertools
 from plot import *
 
 
-# In[50]:
-
-
-# if IN_COLAB:
-#     high_level_root = Path('/content/')
-    
-#     get_ipython().run_line_magic('pip', 'install gdown')
-# else:
   
-high_level_root = Path(os.getcwd())
-saved_runs_dir = high_level_root/'saved_runs'
-large_file_root = high_level_root/'large_files'
-
-try:
-    os.mkdir(large_file_root)
-except:
-    pass
-import os
-# if IN_COLAB:
-#     os.system(f"gdown 12pmgxpTHLDzSNMbMCuAMXP1lE_XiCQRy -O {large_file_root}")
-
-
-# In[51]:
-
 
 def to_numpy(tensor, flat=False):
     if isinstance(tensor, np.ndarray):
@@ -97,20 +108,13 @@ def to_numpy(tensor, flat=False):
     elif isinstance(tensor, list):
         # if isinstance(tensor[0])
         return np.array(tensor)
-    elif isinstance(tensor, torch.Tensor):
+    elif isinstance(tensor, t.Tensor):
         if flat:
             return tensor.flatten().detach().cpu().numpy()
         else:
             return tensor.detach().cpu().numpy()
     else:
         raise ValueError(f"Input to to_numpy has invalid type: {type(tensor)}")
-
-
-# # Plotting Setup
-
-# ### Plotting Functions
-
-# In[52]:
 
 
 # Plotly bug means we need to write a graph to PDF first!
@@ -178,15 +182,13 @@ inputs_heatmap = partial(imshow, xaxis='Input 1', yaxis='Input 2',
 lines = line
 
 
-# In[56]:
-
 
 def imshow_fourier(tensor, title='', animation_name='snapshot', facet_labels=[], return_fig=False, **kwargs):
     # Set nice defaults for plotting functions in the 2D fourier basis
     # tensor is assumed to already be in the Fourier Basis
     if tensor.shape[0]==p*p:
         tensor = unflatten_first(tensor)
-    tensor = torch.squeeze(tensor)
+    tensor = t.squeeze(tensor)
     fig=px.imshow(to_numpy(tensor),
             x=fourier_basis_names, 
             y=fourier_basis_names, 
@@ -209,18 +211,12 @@ def imshow_fourier(tensor, title='', animation_name='snapshot', facet_labels=[],
         # fig.show("vscode+colab")
 
 
-# #### Helper Functions
-
-# #### Plotting Functions
-
-# In[57]:
-
 
 def embed_to_cos_sin(fourier_embed):
     if len(fourier_embed.shape) == 1:
-        return torch.stack([fourier_embed[1::2], fourier_embed[2::2]])
+        return t.stack([fourier_embed[1::2], fourier_embed[2::2]])
     else:
-        return torch.stack([fourier_embed[:, 1::2], fourier_embed[:, 2::2]], dim=1)
+        return t.stack([fourier_embed[:, 1::2], fourier_embed[:, 2::2]], dim=1)
 
 
 def plot_embed_bars(fourier_embed, title='Norm of embedding of each Fourier Component', return_fig=False, **kwargs):
@@ -238,313 +234,11 @@ def plot_embed_bars(fourier_embed, title='Norm of embedding of each Fourier Comp
     else:
         assert False
         # fig.show("vscode+colab")
-
-
-
 # write_image(fig, 'norm_fourier_embedding')
 
 
-# ## Image Writing
-
-# In[58]:
-
-
-high_level_root
-
-
-# In[59]:
-
-
-image_dir = high_level_root/'images'
-json_dir = high_level_root/'jsons'
-html_dir = high_level_root/'htmls'
-big_latex_string = []
-all_figure_names = []
 def write_image(fig, name, file_type='pdf', apply_template=True, caption='', interpretation=''):
   fig.write_image("{}/{}.pdf".format(plotdir, name))
-
-  pass
-    # fig.show("vscode+colab")
-    # html = fig.to_html(include_plotlyjs='cdn')
-    # fig.write_html(html_dir/f"{name}.html")
-    # print(html)
-
-
-# # Model Setup
-
-# ## Defining Transformer
-
-# In[60]:
-
-
-# A helper class to get access to intermediate activations (inspired by Garcon)
-# It's a dummy module that is the identity function by default
-# I can wrap any intermediate activation in a HookPoint and get a convenient 
-# way to add PyTorch hooks
-class HookPoint(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.fwd_hooks = []
-        self.bwd_hooks = []
-    
-    def give_name(self, name):
-        # Called by the model at initialisation
-        self.name = name
-    
-    def add_hook(self, hook, dir='fwd'):
-        # Hook format is fn(activation, hook_name)
-        # Change it into PyTorch hook format (this includes input and output, 
-        # which are the same for a HookPoint)
-        def full_hook(module, module_input, module_output):
-            return hook(module_output, name=self.name)
-        if dir=='fwd':
-            handle = self.register_forward_hook(full_hook)
-            self.fwd_hooks.append(handle)
-        elif dir=='bwd':
-            handle = self.register_backward_hook(full_hook)
-            self.bwd_hooks.append(handle)
-        else:
-            raise ValueError(f"Invalid direction {dir}")
-    
-    def remove_hooks(self, dir='fwd'):
-        if (dir=='fwd') or (dir=='both'):
-            for hook in self.fwd_hooks:
-                hook.remove()
-            self.fwd_hooks = []
-        if (dir=='bwd') or (dir=='both'):
-            for hook in self.bwd_hooks:
-                hook.remove()
-            self.bwd_hooks = []
-        if dir not in ['fwd', 'bwd', 'both']:
-            raise ValueError(f"Invalid direction {dir}")
-    
-    def forward(self, x):
-        return x
-
-
-# In[61]:
-
-
-# Define network architecture
-# I defined my own transformer from scratch so I'd fully understand each component 
-# - I expect this wasn't necessary or particularly important, and a bunch of this 
-# replicates existing PyTorch functionality
-
-# Embed & Unembed
-class Embed(nn.Module):
-    def __init__(self, d_vocab, d_model):
-        super().__init__()
-        self.W_E = nn.Parameter(torch.randn(d_model, d_vocab)/np.sqrt(d_model))
-    
-    def forward(self, x):
-        return torch.einsum('dbp -> bpd', self.W_E[:, x])
-
-class Unembed(nn.Module):
-    def __init__(self, d_vocab, d_model):
-        super().__init__()
-        self.W_U = nn.Parameter(torch.randn(d_model, d_vocab)/np.sqrt(d_vocab))
-    
-    def forward(self, x):
-        return (x @ self.W_U)
-
-# Positional Embeddings
-class PosEmbed(nn.Module):
-    def __init__(self, max_ctx, d_model):
-        super().__init__()
-        self.W_pos = nn.Parameter(torch.randn(max_ctx, d_model)/np.sqrt(d_model))
-    
-    def forward(self, x):
-        return x+self.W_pos[:x.shape[-2]]
-
-# LayerNorm
-class LayerNorm(nn.Module):
-    def __init__(self, d_model, epsilon = 1e-4, model=[None]):
-        super().__init__()
-        self.model = model
-        self.w_ln = nn.Parameter(torch.ones(d_model))
-        self.b_ln = nn.Parameter(torch.zeros(d_model))
-        self.epsilon = epsilon
-    
-    def forward(self, x):
-        if self.model[0].use_ln:
-            x = x - x.mean(axis=-1)[..., None]
-            x = x / (x.std(axis=-1)[..., None] + self.epsilon)
-            x = x * self.w_ln
-            x = x + self.b_ln
-            return x
-        else:
-            return x
-
-# Attention
-class Attention(nn.Module):
-    def __init__(self, d_model, num_heads, d_head, n_ctx, model):
-        super().__init__()
-        self.model = model
-        self.W_K = nn.Parameter(torch.randn(num_heads, d_head, d_model)/np.sqrt(d_model))
-        self.W_Q = nn.Parameter(torch.randn(num_heads, d_head, d_model)/np.sqrt(d_model))
-        self.W_V = nn.Parameter(torch.randn(num_heads, d_head, d_model)/np.sqrt(d_model))
-        self.W_O = nn.Parameter(torch.randn(d_model, d_head * num_heads)/np.sqrt(d_model))
-        self.register_buffer('mask', torch.tril(torch.ones((n_ctx, n_ctx))))
-        self.d_head = d_head
-        self.hook_k = HookPoint()
-        self.hook_q = HookPoint()
-        self.hook_v = HookPoint()
-        self.hook_z = HookPoint()
-        self.hook_attn = HookPoint()
-        self.hook_attn_pre = HookPoint()
-
-    def forward(self, x):
-        k = self.hook_k(torch.einsum('ihd,bpd->biph', self.W_K, x))
-        q = self.hook_q(torch.einsum('ihd,bpd->biph', self.W_Q, x))
-        v = self.hook_v(torch.einsum('ihd,bpd->biph', self.W_V, x))
-        attn_scores_pre = torch.einsum('biph,biqh->biqp', k, q)
-        attn_scores_masked = torch.tril(attn_scores_pre) - 1e10 * (1 - self.mask[:x.shape[-2], :x.shape[-2]])
-        attn_matrix = self.hook_attn(F.softmax(self.hook_attn_pre(attn_scores_masked/np.sqrt(self.d_head)), dim=-1))
-        z = self.hook_z(torch.einsum('biph,biqp->biqh', v, attn_matrix))
-        z_flat = einops.rearrange(z, 'b i q h -> b q (i h)')
-        out = torch.einsum('df,bqf->bqd', self.W_O, z_flat)
-        return out
-
-# MLP Layers
-class MLP(nn.Module):
-    def __init__(self, d_model, d_mlp, act_type, model):
-        super().__init__()
-        self.model = model
-        self.W_in = nn.Parameter(torch.randn(d_mlp, d_model)/np.sqrt(d_model))
-        self.b_in = nn.Parameter(torch.zeros(d_mlp))
-        self.W_out = nn.Parameter(torch.randn(d_model, d_mlp)/np.sqrt(d_model))
-        self.b_out = nn.Parameter(torch.zeros(d_model))
-        self.act_type = act_type
-        # self.ln = LayerNorm(d_mlp, model=self.model)
-        self.hook_pre = HookPoint()
-        self.hook_post = HookPoint()
-        assert act_type in ['ReLU', 'GeLU']
-        
-    def forward(self, x):
-        x = self.hook_pre(torch.einsum('md,bpd->bpm', self.W_in, x) + self.b_in)
-        if self.act_type=='ReLU':
-            x = F.relu(x)
-        elif self.act_type=='GeLU':
-            x = F.gelu(x)
-        x = self.hook_post(x)
-        x = torch.einsum('dm,bpm->bpd', self.W_out, x) + self.b_out
-        return x
-
-# Transformer Block
-class TransformerBlock(nn.Module):
-    def __init__(self, d_model, d_mlp, d_head, num_heads, n_ctx, act_type, model):
-        super().__init__()
-        self.model = model
-        # self.ln1 = LayerNorm(d_model, model=self.model)
-        self.attn = Attention(d_model, num_heads, d_head, n_ctx, model=self.model)
-        # self.ln2 = LayerNorm(d_model, model=self.model)
-        self.mlp = MLP(d_model, d_mlp, act_type, model=self.model)
-        self.hook_attn_out = HookPoint()
-        self.hook_mlp_out = HookPoint()
-        self.hook_resid_pre = HookPoint()
-        self.hook_resid_mid = HookPoint()
-        self.hook_resid_post = HookPoint()
-    
-    def forward(self, x):
-        x = self.hook_resid_mid(x + self.hook_attn_out(self.attn((self.hook_resid_pre(x)))))
-        x = self.hook_resid_post(x + self.hook_mlp_out(self.mlp((x))))
-        return x
-
-# Full transformer
-class Transformer(nn.Module):
-    def __init__(self, num_layers, d_vocab, d_model, d_mlp, d_head, num_heads, n_ctx, act_type, use_cache=False, use_ln=True):
-        super().__init__()
-        self.cache = {}
-        self.use_cache = use_cache
-
-        self.embed = Embed(d_vocab, d_model)
-        self.pos_embed = PosEmbed(n_ctx, d_model)
-        self.blocks = nn.ModuleList([TransformerBlock(d_model, d_mlp, d_head, num_heads, n_ctx, act_type, model=[self]) for i in range(num_layers)])
-        # self.ln = LayerNorm(d_model, model=[self])
-        self.unembed = Unembed(d_vocab, d_model)
-        self.use_ln = use_ln
-
-        for name, module in self.named_modules():
-            if type(module)==HookPoint:
-                module.give_name(name)
-    
-    def forward(self, x):
-        x = self.embed(x)
-        x = self.pos_embed(x)
-        for block in self.blocks:
-            x = block(x)
-        # x = self.ln(x)
-        x = self.unembed(x)
-        return x
-
-    def set_use_cache(self, use_cache):
-        self.use_cache = use_cache
-    
-    def hook_points(self):
-        return [module for name, module in self.named_modules() if 'hook' in name]
-
-    def remove_all_hooks(self):
-        for hp in self.hook_points():
-            hp.remove_hooks('fwd')
-            hp.remove_hooks('bwd')
-    
-    def cache_all(self, cache, incl_bwd=False):
-        # Caches all activations wrapped in a HookPoint
-        def save_hook(tensor, name):
-            cache[name] = tensor.detach()
-        def save_hook_back(tensor, name):
-            cache[name+'_grad'] = tensor[0].detach()
-        for hp in self.hook_points():
-            hp.add_hook(save_hook, 'fwd')
-            if incl_bwd:
-                hp.add_hook(save_hook_back, 'bwd')
-
-
-# ## Helper Functions
-
-# In[62]:
-
-
-def cross_entropy_high_precision(logits, labels):
-    # Shapes: batch x vocab, batch
-    # Cast logits to float64 because log_softmax has a float32 underflow on overly 
-    # confident data and can only return multiples of 1.2e-7 (the smallest float x
-    # such that 1+x is different from 1 in float32). This leads to loss spikes 
-    # and dodgy gradients
-    logprobs = F.log_softmax(logits.to(torch.float64), dim=-1)
-    prediction_logprobs = torch.gather(logprobs, index=labels[:, None], dim=-1)
-    loss = -torch.mean(prediction_logprobs)
-    return loss
-
-def full_loss(model, data):
-    # Take the final position only
-    logits = model(data)[:, -1]
-    labels = torch.tensor([fn(i, j) for i, j, _ in data]).to('cuda')
-    return cross_entropy_high_precision(logits, labels)
-
-def test_logits(logits, bias_correction=False, original_logits=None, mode='all'):
-    # Calculates cross entropy loss of logits representing a batch of all p^2 
-    # possible inputs
-    # Batch dimension is assumed to be first
-    if logits.shape[1]==p*p:
-        logits = logits.T
-    if logits.shape==torch.Size([p*p, p+1]):
-        logits = logits[:, :-1]
-    logits = logits.reshape(p*p, p)
-    if bias_correction:
-        # Applies bias correction - we correct for any missing bias terms, 
-        # independent of the input, by centering the new logits along the batch 
-        # dimension, and then adding the average original logits across all inputs
-        logits = einops.reduce(original_logits - logits, 'batch ... -> ...', 'mean') + logits
-    if mode=='train':
-        return cross_entropy_high_precision(logits[is_train], labels[is_train])
-    elif mode=='test':
-        return cross_entropy_high_precision(logits[is_test], labels[is_test])
-    elif mode=='all':
-        return cross_entropy_high_precision(logits, labels)
-
-
-# In[ ]:
 
 
 
@@ -587,20 +281,20 @@ def is_close(a, b):
 # In[64]:
 
 
-p=113
+p=config.p
 fourier_basis = []
-fourier_basis.append(torch.ones(p)/np.sqrt(p))
+fourier_basis.append(t.ones(p)/np.sqrt(p))
 fourier_basis_names = ['Const']
 # Note that if p is even, we need to explicitly add a term for cos(kpi), ie 
 # alternating +1 and -1
 for i in range(1, p//2 +1):
-    fourier_basis.append(torch.cos(2*torch.pi*torch.arange(p)*i/p))
-    fourier_basis.append(torch.sin(2*torch.pi*torch.arange(p)*i/p))
+    fourier_basis.append(t.cos(2*t.pi*t.arange(p)*i/p))
+    fourier_basis.append(t.sin(2*t.pi*t.arange(p)*i/p))
     fourier_basis[-2]/=fourier_basis[-2].norm()
     fourier_basis[-1]/=fourier_basis[-1].norm()
     fourier_basis_names.append(f'cos {i}')
     fourier_basis_names.append(f'sin {i}')
-fourier_basis = torch.stack(fourier_basis, dim=0).to('cuda')
+fourier_basis = t.stack(fourier_basis, dim=0).to(DEVICE)
 # animate_lines(fourier_basis, snapshot_index=fourier_basis_names, snapshot='Fourier Component', title='Graphs of Fourier Components (Use Slider)')
 
 
@@ -623,7 +317,7 @@ def fft2d(mat):
     # Output has the same shape as the original
     shape = mat.shape
     mat = einops.rearrange(mat, '(x y) ... -> x y (...)', x=p, y=p)
-    fourier_mat = torch.einsum('xyz,fx,Fy->fFz', mat, fourier_basis, fourier_basis)
+    fourier_mat = t.einsum('xyz,fx,Fy->fFz', mat, fourier_basis, fourier_basis)
     return fourier_mat.reshape(shape)
 
 def analyse_fourier_2d(tensor, top_k=10):
@@ -670,90 +364,6 @@ def get_component_sin_xpy(tensor, freq, collapse_dim=False):
         return sin_xpy_direction[:, None] @ (sin_xpy_direction[None, :] @ tensor)
 
 
-# ## Model Analysis Setup
-# Loads the model snapshot to analyse, and defines helper variables. No need to read, though a useful reference for what variables mean
-
-# ### Defining Model
-
-# In[66]:
-
-
-lr=1e-3 #@param
-weight_decay = 1.0 #@param
-p=113 #@param
-d_model = 128 #@param
-fn_name = 'add' #@param ['add', 'subtract', 'x2xyy2','rand']
-frac_train = 0.3 #@param
-num_epochs = 50000 #@param
-save_models = False #@param
-save_every = 100 #@param
-# Stop training when test loss is <stopping_thresh
-stopping_thresh = -1 #@param
-seed = 0 #@param
-
-num_layers = 1
-batch_style = 'full'
-d_vocab = p+1
-n_ctx = 3
-d_mlp = 4*d_model
-num_heads = 4
-assert d_model % num_heads == 0
-d_head = d_model//num_heads
-act_type = 'ReLU' #@param ['ReLU', 'GeLU']
-# batch_size = 512
-use_ln = False
-random_answers = np.random.randint(low=0, high=p, size=(p, p))
-fns_dict = {'add': lambda x,y:(x+y)%p, 'subtract': lambda x,y:(x-y)%p, 'x2xyy2':lambda x,y:(x**2+x*y+y**2)%p, 'rand':lambda x,y:random_answers[x][y]}
-fn = fns_dict[fn_name]
-
-def gen_train_test(frac_train, num, seed=0):
-    # Generate train and test split
-    pairs = [(i, j, num) for i in range(num) for j in range(num)]
-    random.seed(seed)
-    random.shuffle(pairs)
-    div = int(frac_train*len(pairs))
-    return pairs[:div], pairs[div:]
-
-train, test = gen_train_test(frac_train, p, seed)
-print(len(train), len(test))
-
-# Creates an array of Boolean indices according to whether each data point is in 
-# train or test
-# Used to index into the big batch of all possible data
-is_train = []
-is_test = []
-for x in range(p):
-    for y in range(p):
-        if (x, y, 113) in train:
-            is_train.append(True)
-            is_test.append(False)
-        else:
-            is_train.append(False)
-            is_test.append(True)
-is_train = np.array(is_train)
-is_test = np.array(is_test)
-
-
-# In[67]:
-
-if SETUP == "original":
-    full_run_data = torch.load(large_file_root/'full_run_data.pth')
-elif SETUP == "rerun":
-    full_run_data = torch.load(large_file_root/'rerun.pth')
-elif SETUP == "binary":
-    full_run_data = torch.load(large_file_root/'binary.pth')
-elif SETUP == "onehot":
-    full_run_data = torch.load(large_file_root/'onehot.pth')
-    # full_run_data = torch.load("saved_runs/grok_1692540721/final.pth")
-    
-print(full_run_data.keys())
-# print(full_run_data['config'])
-
-
-# We load in the model weights from epoch 40,000 to analyse.
-
-# In[68]:
-
 
 # train_losses = full_run_data['train_losses'][:40000]
 # test_losses = full_run_data['test_losses'][:4000]
@@ -762,19 +372,9 @@ print(full_run_data.keys())
 # In[69]:
 
 
-model = Transformer(num_layers=num_layers, d_vocab=d_vocab, d_model=d_model, d_mlp=d_mlp, d_head=d_head, num_heads=num_heads, n_ctx=n_ctx, act_type=act_type, use_cache=False, use_ln=use_ln)
-model.to('cuda')
-model.load_state_dict(full_run_data['state_dicts'][EPOCHS_TO_SHOW//100])
-
-
-# ### Create helper variables
-# 
-
-# In[70]:
-
 
 # Helper variables
-W_O = einops.rearrange(model.blocks[0].attn.W_O, 'm (i h)->i m h', i=num_heads)
+W_O = einops.rearrange(model.blocks[0].attn.W_O, 'm (i h)->i m h', i=config.num_heads)
 W_K = model.blocks[0].attn.W_K
 W_Q = model.blocks[0].attn.W_Q
 W_V = model.blocks[0].attn.W_V
@@ -788,22 +388,22 @@ W_U = model.unembed.W_U[:, :-1].T
 
 # The initial value of the residual stream at position 2 - constant for all inputs
 final_pos_resid_initial = model.embed.W_E[:, -1] + W_pos[:, 2]
-print('W_O', W_O.shape)
-print('W_K', W_K.shape)
-print('W_Q', W_Q.shape)
-print('W_V', W_V.shape)
-print('W_in', W_in.shape)
-print('W_out', W_out.shape)
-print('W_pos', W_pos.shape)
-print('W_E', W_E.shape)
-print('W_U', W_U.shape)
-print('Initial residual stream value at final pos:', final_pos_resid_initial.shape)
+# print('W_O', W_O.shape)
+# print('W_K', W_K.shape)
+# print('W_Q', W_Q.shape)
+# print('W_V', W_V.shape)
+# print('W_in', W_in.shape)
+# print('W_out', W_out.shape)
+# print('W_pos', W_pos.shape)
+# print('W_E', W_E.shape)
+# print('W_U', W_U.shape)
+# print('Initial residual stream value at final pos:', final_pos_resid_initial.shape)
 
 
 # In[71]:
 
 
-W_attn = torch.einsum('m,ihm,ihM,Mv->iv', final_pos_resid_initial, W_Q, W_K, W_E)
+W_attn = t.einsum('m,ihm,ihM,Mv->iv', final_pos_resid_initial, W_Q, W_K, W_E)
 W_L = W_U @ W_out
 W_neur = W_in @ W_O @ W_V @ W_E
 
@@ -815,8 +415,6 @@ W_neur = W_in @ W_O @ W_V @ W_E
 # In[72]:
 
 
-all_data = torch.tensor([(i, j, p) for i in range(p) for j in range(p)]).to('cuda')
-labels = torch.tensor([fn(i, j) for i, j, _ in all_data]).to('cuda')
 cache = {}
 model.remove_all_hooks()
 model.cache_all(cache)
@@ -824,29 +422,23 @@ model.cache_all(cache)
 original_logits = model(all_data)[:, -1]
 # Remove equals sign from output logits
 original_logits = original_logits[:, :-1]
-original_loss = cross_entropy_high_precision(original_logits, labels)
+original_loss = helpers.cross_entropy_high_precision(original_logits, all_labels)
 print(f"Original loss: {original_loss.item()}")
 
 
 # We cache all intermediate activations, using HookPoints
 
-# In[73]:
-
-
-for k in cache.keys():
-    print(k, cache[k].shape)
-
-
-# In[74]:
+# for k in cache.keys():
+#     print(k, cache[k].shape)
 
 
 # Extracts out key activations
 attn_mat = cache['blocks.0.attn.hook_attn'][:, :, 2, :2]
-print('Attention Matrix:', attn_mat.shape)
+# print('Attention Matrix:', attn_mat.shape)
 neuron_acts = cache['blocks.0.mlp.hook_post'][:, -1]
-print('Neuron Activations:', neuron_acts.shape)
+# print('Neuron Activations:', neuron_acts.shape)
 neuron_acts_pre = cache['blocks.0.mlp.hook_pre'][:, -1]
-print('Neuron Activations Pre:', neuron_acts_pre.shape)
+# print('Neuron Activations Pre:', neuron_acts_pre.shape)
 
 
 # In[75]:
@@ -869,21 +461,20 @@ indices = np.array(indices)
 
 # In[76]:
 
-
 neuron_acts_centered = neuron_acts - einops.reduce(neuron_acts, 'batch neuron -> 1 neuron', 'mean')
 # Note that fourier_neuron_acts[(0, 0), i]==0 for all i, because we centered the activations
 fourier_neuron_acts = fft2d(neuron_acts_centered)
-fourier_neuron_acts_square = fourier_neuron_acts.reshape(p, p, d_mlp)
+fourier_neuron_acts_square = fourier_neuron_acts.reshape(p, p, config.d_mlp)
 
 neuron_norms = fourier_neuron_acts.pow(2).sum(0)
 # print(neuron_norms.shape)
-
 
 freq_acts = fourier_neuron_acts[indices.flatten()].reshape(56, 8, 512)
 neuron_explanation = freq_acts[:].pow(2).sum(1)/neuron_norms
 neuron_frac_explained = neuron_explanation.max(0).values
 neuron_freqs = neuron_explanation.argmax(0)+1
 neuron_freqs_original = neuron_freqs.clone()
+
 
 key_freqs, neuron_freq_counts = np.unique(to_numpy(neuron_freqs), return_counts=True)
 
@@ -894,7 +485,7 @@ neuron_freqs[neuron_frac_explained < 0.85] = -1.
 neuron_freqs = to_numpy(neuron_freqs)
 key_freqs_plus = np.concatenate([key_freqs, np.array([-1])])
 
-neuron_labels_by_cluster = np.concatenate([np.arange(d_mlp)[neuron_freqs==freq] for freq in key_freqs_plus])
+neuron_labels_by_cluster = np.concatenate([np.arange(config.d_mlp)[neuron_freqs==freq] for freq in key_freqs_plus])
 
 
 # In[77]:
@@ -918,15 +509,15 @@ key_indices = np.array(key_indices)
 # In[78]:
 
 
-x_vec = torch.arange(p)[:, None, None].float().to("cuda")
-y_vec = torch.arange(p)[None, :, None].float().to("cuda")
-z_vec = torch.arange(p)[None, None, :].float().to("cuda")
+x_vec = t.arange(p)[:, None, None].float().to("cuda")
+y_vec = t.arange(p)[None, :, None].float().to("cuda")
+z_vec = t.arange(p)[None, None, :].float().to("cuda")
 
 # Sum of the true answer, uniformly
 coses = []
 for w in range(1, p//2 + 1):
-    coses.append(torch.cos(w * torch.pi*2 / p * (x_vec + y_vec - z_vec)).to("cuda"))
-coses = torch.stack(coses, axis=0).reshape(p//2, p*p, p)
+    coses.append(t.cos(w * t.pi*2 / p * (x_vec + y_vec - z_vec)).to("cuda"))
+coses = t.stack(coses, axis=0).reshape(p//2, p*p, p)
 coses/=coses.pow(2).sum([-2, -1], keepdim=True).sqrt()
 # for i in range(3):
 #     imshow(new_cube[:, :, i])
@@ -952,21 +543,21 @@ def get_metrics(model, metric_cache, metric_fn, name, reset=False):
             model.remove_all_hooks()
             model.load_state_dict(sd)
             out = metric_fn(model)
-            if type(out)==torch.Tensor:
+            if type(out)==t.Tensor:
                 out = to_numpy(out)
             metric_cache[name].append(out)
         model.load_state_dict(full_run_data['state_dicts'][EPOCHS_TO_SHOW//100])
         try:
-            metric_cache[name] = torch.tensor(np.array(metric_cache[name]))
+            metric_cache[name] = t.tensor(np.array(metric_cache[name]))
         except:
-            metric_cache[name] = torch.tensor(np.array(metric_cache[name]))
+            metric_cache[name] = t.tensor(np.array(metric_cache[name]))
 def test_loss(model):
     logits = model(all_data)[:, -1, :-1]
-    return test_logits(logits, False, mode='test')
+    return test_logits_simple(logits, mode='test')
 get_metrics(model, metric_cache, test_loss, 'test_loss')
 def train_loss(model):
     logits = model(all_data)[:, -1, :-1]
-    return test_logits(logits, False, mode='train')
+    return test_logits_simple(logits, mode='train')
 get_metrics(model, metric_cache, train_loss, 'train_loss')
 
 
@@ -974,7 +565,7 @@ get_metrics(model, metric_cache, train_loss, 'train_loss')
 
 
 def acc(logits, mode='all'):
-    bool_vec = (logits.argmax(1)==labels)
+    bool_vec = (logits.argmax(1)==all_labels)
     if mode=='all':
         subset=None 
     elif mode=='train':
@@ -991,7 +582,7 @@ def get_train_acc(model):
     logits = model(all_data)[:, -1, :-1]
     # def acc(logits):
     # return (logits.argmax(1)==labels).sum()/p/p
-    bool_vec = logits.argmax(1)[is_train] == labels[is_train]
+    bool_vec = logits.argmax(1)[is_train] == all_labels[is_train]
     return bool_vec.sum()/len(bool_vec)
 get_metrics(model, metric_cache, get_train_acc, 'train_acc')
 # plot_metric([metric_cache['train_acc']], log_y=False)
@@ -1000,7 +591,7 @@ def get_test_acc(model):
     logits = model(all_data)[:, -1, :-1]
     # def acc(logits):
     # return (logits.argmax(1)==labels).sum()/p/p
-    bool_vec = logits.argmax(1)[is_test] == labels[is_test]
+    bool_vec = logits.argmax(1)[is_test] == all_labels[is_test]
     return bool_vec.sum()/len(bool_vec)
 get_metrics(model, metric_cache, get_test_acc, 'test_acc')
 
@@ -1010,7 +601,7 @@ get_metrics(model, metric_cache, get_test_acc, 'test_acc')
 
 # Construct a mask that has a 1 on the quadratic terms of a specific frequency, 
 # and zeros everywhere else
-quadratic_mask = torch.zeros((p, p), device='cuda')
+quadratic_mask = t.zeros((p, p), device=DEVICE)
 for freq in range(1, (p//2)+1):
     for i in [2*freq-1, 2*freq]:
         for j in [2*freq-1, 2*freq]:
@@ -1044,11 +635,10 @@ def calculate_excluded_loss_2D(model):
     logits = model(all_data)[:, -1, :-1]
     row = []
     for freq in range(1, p//2+1):
-        row.append(test_logits((logits - 
-                                get_component_cos_xpy(logits, freq) - 
-                                get_component_sin_xpy(logits, freq)), 
-                               bias_correction=False, 
-                               mode='train').item())
+        row.append(test_logits_simple((logits - 
+                                       get_component_cos_xpy(logits, freq) - 
+                                       get_component_sin_xpy(logits, freq)),
+                                      mode='train').item())
     return row
 get_metrics(model, metric_cache, calculate_excluded_loss_2D, 'excluded_loss_2D', reset=False)
 
@@ -1064,7 +654,7 @@ def calculate_excluded_loss_2D_full(model):
         new_logits -= (get_component_cos_xpy(logits, freq))
         new_logits -= (get_component_sin_xpy(logits, freq))
         
-    return test_logits(new_logits, False, mode='train')
+    return test_logits_simple(new_logits, mode='train')
 get_metrics(model, metric_cache, calculate_excluded_loss_2D_full, 'excluded_loss_2D_full', reset=False)
 
 
@@ -1103,7 +693,7 @@ def excluded_loss_3D(model):
     logits = model(all_data)[:, -1, :-1]
     vals = ((coses * logits[None, :]).sum([-2, -1]))
 
-    return [test_logits(logits - (v * coses[c]), mode='train').item() for c, v in enumerate(vals)]
+    return [test_logits_simple(logits - (v * coses[c]), mode='train').item() for c, v in enumerate(vals)]
 get_metrics(model, metric_cache, excluded_loss_3D, 'excluded_loss_3D', reset=False)
 
 
@@ -1111,7 +701,7 @@ def excluded_loss_3D_full(model):
     logits = model(all_data)[:, -1, :-1]
     vals = ((coses * logits[None, :]).sum([-2, -1]))
     logits = logits - (vals[key_freqs-1, None, None] * coses[key_freqs-1]).sum(0)
-    return test_logits(logits, mode='train')
+    return test_logits_simple(logits, mode='train')
 get_metrics(model, metric_cache, excluded_loss_3D_full, 'excluded_loss_3D_full', reset=False)
 
 
@@ -1141,7 +731,7 @@ def trig_loss(model, mode='all'):
     trig_logits = sum([get_component_cos_xpy(logits, freq) + 
                    get_component_sin_xpy(logits, freq)
                    for freq in key_freqs])
-    return test_logits(trig_logits, 
+    return test_logits_simple(trig_logits, 
                        bias_correction=True, 
                        original_logits=logits, 
                        mode=mode)
@@ -1300,7 +890,7 @@ fig = inputs_heatmap(attn_mat[:, :,  0],
                      return_fig=True,
                      color_continuous_scale='Blues',
                      facet_col=2,
-                    facet_labels=[f"Head {i}" for i in range(4)],
+                     facet_labels=[f"Head {i}" for i in range(4)],
                      zmin=0.,
                      zmax=1.)
 fig = fig.update_layout(coloraxis_colorbar_x=1.0,
@@ -1361,7 +951,7 @@ write_image(fig, 'Fig_5_neuron_frac_explained')
 fig = imshow(fourier_basis @ W_L[:, neuron_freqs==key_freqs[0]], 
                  aspect='auto', 
                  y=fourier_basis_names,
-                 x = torch.arange(d_mlp)[neuron_freqs==key_freqs[0]], 
+                 x = t.arange(config.d_mlp)[neuron_freqs==key_freqs[0]], 
                  title='Weights Mapping Freq {} Neurons to Logits'.format(key_freqs[0]),
                  xaxis='Neuron',
                  return_fig=True, height = 500, width=500)
@@ -1398,7 +988,7 @@ def to_numpy(tensor, flat=False):
         # if isinstance(tensor[0])
         tensor = [to_numpy(t) for t in tensor]
         return np.stack(tensor, axis=0)
-    elif isinstance(tensor, torch.Tensor):
+    elif isinstance(tensor, t.Tensor):
         if flat:
             return tensor.flatten().detach().cpu().numpy()
         else:
@@ -1492,6 +1082,8 @@ figures[2] = fig
 #             return_fig = True)
 # fig.show("vscode+colab")
 # write_image(fig, "sum_sq_weight_by_param")
+
+
 fig = plot_metric([einops.reduce(metric_cache['sum_sq_weights'], 'epoch param -> epoch', 'sum')], 
             title='Total Sum of Squared Weights',
             log_y=False,
@@ -1500,7 +1092,6 @@ fig = plot_metric([einops.reduce(metric_cache['sum_sq_weights'], 'epoch param ->
 # fig.show("vscode+colab")
 write_image(fig, "Fig_7_sum_sq_weight_total")
 figures[3] = fig
-
 
 # In[105]:
 
@@ -1527,7 +1118,7 @@ for fig, name in zip(figures, names):
 # In[106]:
 
 
-W_attnf = torch.einsum('fv,mv,ihm,ihM,M->if', fourier_basis, W_E, W_K, W_Q, final_pos_resid_initial)
+W_attnf = t.einsum('fv,mv,ihm,ihM,M->if', fourier_basis, W_E, W_K, W_Q, final_pos_resid_initial)
 W_attnf = W_attnf.squeeze()
 fig = lines(W_attnf,
             xaxis='Fourier Component',
@@ -1562,7 +1153,6 @@ write_image(fig, 'restricted_accuracy')
 # In[108]:
 
 
-key_freq_strs = list(map(str, key_freqs))
 fig = plot_metric(metric_cache['cos_coeffs'].T[key_freqs - 1],
                   title='$\huge{\\text{Coefficients of }\\cos(w(a+b-c))\\text{ in the logits}}$',
                   return_fig=True,
@@ -1585,7 +1175,7 @@ write_image(fig, 'cos_coeffs_logits', caption=caption,
 # In[109]:
 
 
-fig = lines(torch.concat([metric_cache['excluded_loss_2D'].T[key_freqs-1], metric_cache['train_loss'][None, :],  metric_cache['test_loss'][None, :]], axis=0),
+fig = lines(t.concat([metric_cache['excluded_loss_2D'].T[key_freqs-1], metric_cache['train_loss'][None, :],  metric_cache['test_loss'][None, :]], axis=0),
             line_labels=[f"excl. {freq}" for freq in key_freqs]+['train', 'test'],
             title='Excluded Loss- Key Frequencies',
             log_y=True,
@@ -1610,7 +1200,7 @@ write_image(fig, 'excluded_loss_2D_key')
 # In[110]:
 
 
-# train_losses_5_digit = torch.load(
+# train_losses_5_digit = t.load(
 #     saved_runs_dir/'5_digit_addition_infinite_train.pth')
 # fig = line(train_losses_5_digit, 
 #      log_y=False, 
@@ -1626,7 +1216,7 @@ write_image(fig, 'excluded_loss_2D_key')
 # write_image(fig, "5_digit_add_infinite_linear")
 
 
-# per_token_losses = torch.load(
+# per_token_losses = t.load(
 #     saved_runs_dir/'5_digit_addition_infinite_per_token.pth')
 # loss_concat = np.concatenate(
 #     [per_token_losses, np.array(train_losses_5_digit)[:, None]], axis=1).T
@@ -1649,7 +1239,7 @@ write_image(fig, 'excluded_loss_2D_key')
 # In[111]:
 
 
-# finite_dic = torch.load(saved_runs_dir/'5_digit_addition_finite.pth')
+# finite_dic = t.load(saved_runs_dir/'5_digit_addition_finite.pth')
 # train_losses_5 = finite_dic['train_losses']
 # test_losses_5 = finite_dic['test_losses']
 # fig = lines([train_losses_5, test_losses_5],
@@ -1672,7 +1262,7 @@ write_image(fig, 'excluded_loss_2D_key')
 # In[112]:
 
 
-# induction_head_run_infinite = torch.load(saved_runs_dir/'induction_head_infinite.pth')
+# induction_head_run_infinite = t.load(saved_runs_dir/'induction_head_infinite.pth')
 # fig = lines([induction_head_run_infinite['train_losses']], 
 #     return_fig=True,
 #       title='Repeated Subsequence Prediction- Infinite Data Training (Linear)',
@@ -1690,7 +1280,7 @@ write_image(fig, 'excluded_loss_2D_key')
 # In[113]:
 
 
-# induction_head_run_finite = torch.load(
+# induction_head_run_finite = t.load(
 #     saved_runs_dir/'induction_head_finite.pth')
 # # Test loss taken every 4 epochs, plot data every 40 epochs
 # fig = lines([induction_head_run_finite['train_losses'][:230000:40],

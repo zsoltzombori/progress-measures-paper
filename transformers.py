@@ -479,6 +479,9 @@ def gen_train_test(config: Config):
     if config.input_format != "orig":
         pairs = [t.stack([int_to_vec(element, config.input_format, config.d_vocab) for element in item]) for item in pairs]
 
+    pairs0 = pairs
+    labels0 = labels
+    
     temp = list(zip(pairs, labels))
     random.shuffle(temp)
     pairs, labels = zip(*temp)
@@ -489,10 +492,10 @@ def gen_train_test(config: Config):
     else:
         train_data = t.stack(pairs[:div]).to(DEVICE)
         test_data = t.stack(pairs[div:]).to(DEVICE)
-        all_data = t.stack(pairs).to(DEVICE)
+        all_data = t.stack(pairs0).to(DEVICE)
         train_labels = t.tensor(labels[:div]).to(DEVICE)
         test_labels = t.tensor(labels[div:]).to(DEVICE)
-        all_labels = t.tensor(labels).to(DEVICE)
+        all_labels = t.tensor(labels0).to(DEVICE)
         return train_data, train_labels, test_data, test_labels, all_data, all_labels
 
 # TODO what type for model?
