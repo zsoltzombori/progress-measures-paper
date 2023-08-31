@@ -73,6 +73,7 @@ import itertools
 
 # %% ../helpers.ipynb 7
 root = Path('./saved_runs')
+outdir = Path('./large_files')
 
 #| export
 def download_model_from_drive():

@@ -4,9 +4,15 @@
 import os
 import torch as t
 from pathlib import Path
+import sys
 
 import helpers
 from transformers import *
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--input_format', dest="input_format", default="onehot", help="onehot,unary,binary,onecold,onecold_norm")
+args = parser.parse_args()
+
 
 DEVICE = t.device("cuda" if t.cuda.is_available() else "cpu")
 
@@ -16,27 +22,15 @@ large_file_root = high_level_root/'large_files'
 # print("high_level_root", high_level_root)
 
 
-SETUP="original"
-# SETUP="rerun"
-SETUP="binary"
-SETUP="onehot"
-# SETUP="test"
+EPOCHS_TO_SHOW=39000
 
-EPOCHS_TO_SHOW=29000
-
-plotdir="grokking_plots/{}".format(SETUP)
+plotdir="grokking_plots/{}".format(args.input_format)
 os.makedirs(plotdir, exist_ok=True)  
 
-if SETUP == "original":
+if args.input_format == "original":
     full_run_data = t.load(large_file_root/'full_run_data.pth')
-elif SETUP == "rerun":
-    full_run_data = t.load(large_file_root/'rerun.pth')
-elif SETUP == "binary":
-    full_run_data = t.load(large_file_root/'binary.pth')
-elif SETUP == "onehot":
-    full_run_data = t.load(large_file_root/'onehot.pth')
-elif SETUP == "test":
-    full_run_data = t.load("saved_runs/grok_1692614053/final.pth")
+else:
+    full_run_data = t.load(large_file_root/f'{args.input_format}.pth')
 
     
     
@@ -530,7 +524,7 @@ coses/=coses.pow(2).sum([-2, -1], keepdim=True).sqrt()
 
 epochs = full_run_data['epochs'][:EPOCHS_TO_SHOW//100]
 metric_cache = {}
-plot_metric = partial(lines, x=epochs, xaxis='Epoch', log_y=True)
+plot_metric = partial(lines, x=epochs, xaxis='Epoch', log_y=False)
 
 
 # In[80]:
@@ -579,19 +573,15 @@ def acc(logits, mode='all'):
     return bool_vec.sum()/len(bool_vec)
 
 def get_train_acc(model):
-    logits = model(all_data)[:, -1, :-1]
-    # def acc(logits):
-    # return (logits.argmax(1)==labels).sum()/p/p
-    bool_vec = logits.argmax(1)[is_train] == all_labels[is_train]
+    train_logits = model(train_data)[:, -1, :-1]
+    bool_vec = train_logits.argmax(1) == train_labels
     return bool_vec.sum()/len(bool_vec)
 get_metrics(model, metric_cache, get_train_acc, 'train_acc')
 # plot_metric([metric_cache['train_acc']], log_y=False)
 
 def get_test_acc(model):
-    logits = model(all_data)[:, -1, :-1]
-    # def acc(logits):
-    # return (logits.argmax(1)==labels).sum()/p/p
-    bool_vec = logits.argmax(1)[is_test] == all_labels[is_test]
+    test_logits = model(test_data)[:, -1, :-1]
+    bool_vec = test_logits.argmax(1) == test_labels
     return bool_vec.sum()/len(bool_vec)
 get_metrics(model, metric_cache, get_test_acc, 'test_acc')
 
@@ -817,11 +807,24 @@ print(metric_cache['fourier_embedding'].shape)
 # In[93]:
 
 
-fig = plot_metric([metric_cache['train_acc'], metric_cache['test_acc']], line_labels=['train accuracy', 'test accuracy'], return_fig=True, yaxis="Accuracy", title="Mainline train and test accuracy")
-add_axis_toggle(fig.layout, "x")
-add_axis_toggle(fig.layout, "y")
+# fig = plot_metric([metric_cache['train_acc'], metric_cache['test_acc']], line_labels=['train accuracy', 'test accuracy'], return_fig=True, yaxis="Accuracy", title="Mainline train and test accuracy")
+# add_axis_toggle(fig.layout, "x")
+# add_axis_toggle(fig.layout, "y")
+# # fig.show()
+# write_image(fig, 'Fig_2_accuracy')
+             
+fig = plot_metric([metric_cache['train_acc']], line_labels=['train accuracy'], return_fig=True, yaxis="Train Accuracy", title="Mainline train accuracy")
+fig.update_layout(yaxis_range=[0,1.0])
 # fig.show()
-write_image(fig, 'Fig_2_accuracy')
+write_image(fig, 'Fig_2_train_accuracy')
+fig = plot_metric([metric_cache['test_acc']], line_labels=['test accuracy'], return_fig=True, yaxis="Test Accuracy", title="Mainline test accuracy")
+fig.update_layout(yaxis_range=[0,1.0])
+# fig.show()
+write_image(fig, 'Fig_2_test_accuracy')
+
+sys.exit(0)
+xxx
+
 
 # fig = plot_metric([metric_cache['train_loss'], metric_cache['test_loss']], line_labels=['train loss', 'test loss'], return_fig=True, yaxis="Loss", title="Mainline train and test loss")
 # add_axis_toggle(fig.layout, "x")
@@ -833,6 +836,7 @@ fig = plot_metric([metric_cache['train_loss']], line_labels=['train loss'], retu
 write_image(fig, 'Fig_2_train_loss')
 fig = plot_metric([metric_cache['test_loss']], line_labels=['test loss'], return_fig=True, yaxis="Loss", title="Mainline test loss")
 write_image(fig, 'Fig_2_test_loss')
+
 
 # ## Figure 3
 
